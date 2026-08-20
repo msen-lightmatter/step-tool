@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>STEP Viewer</title>
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<style>
+  :root {
+    --bg: #1b1d21;
+    --panel: #24262b;
+    --panel-border: #34363c;
+    --text: #e6e6e6;
+    --text-dim: #9a9ca1;
+    --accent: #4d90fe;
+    --accent-hover: #6aa4ff;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    overflow: hidden;
+  }
+  #app {
+    display: flex;
+    height: 100vh;
+    width: 100vw;
+  }
+  #sidebar {
+    width: 260px;
+    flex-shrink: 0;
+    background: var(--panel);
+    border-right: 1px solid var(--panel-border);
+    padding: 16px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  #viewport {
+    flex: 1;
+    position: relative;
+    min-width: 0;
+    overflow: hidden;
+  }
+  #viewport canvas {
+    display: block;
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  h1 {
+    font-size: 15px;
+    margin: 0 0 4px 0;
+    font-weight: 600;
+    letter-spacing: 0.2px;
+  }
+  .section-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-dim);
+    margin-bottom: 8px;
+  }
+  #drop-zone {
+    border: 1.5px dashed var(--panel-border);
+    border-radius: 8px;
+    padding: 18px 10px;
+    text-align: center;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  #drop-zone:hover, #drop-zone.dragover {
+    border-color: var(--accent);
+    background: rgba(77, 144, 254, 0.08);
+    color: var(--text);
+  }
+  #file-name {
+    font-size: 12px;
+    color: var(--text-dim);
+    word-break: break-all;
+    min-height: 14px;
+  }
+  .btn {
+    background: #2f323a;
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 12.5px;
+    cursor: pointer;
+    text-align: center;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .btn:hover {
+    background: #383c46;
+    border-color: var(--accent);
+  }
+  .btn:active {
+    background: var(--accent);
+  }
+  .btn.wide {
+    width: 100%;
+  }
+  .btn.active {
+    background: var(--accent);
+    border-color: var(--accent);
+  }
+  .btn:disabled {
+    opacity: 0.4;
+    cursor: default;
+    background: #2f323a;
+    border-color: var(--panel-border);
+  }
+  #iso-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  #ortho-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  #reset-fit {
+    margin-top: 2px;
+  }
+  #png-scale-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 6px;
+  }
+  #rotate-grid {
+    display: grid;
+    grid-template-columns: 16px 1fr 58px 1fr;
+    gap: 6px;
+    align-items: center;
+  }
+  .angle-field {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+    background: #2f323a;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 0 4px;
+    height: 32px;
+  }
+  .angle-field input {
+    flex: 1;
+    min-width: 0;
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 12px;
+    text-align: center;
+    padding: 0;
+  }
+  .angle-field input:focus {
+    outline: none;
+  }
+  .angle-field span {
+    font-size: 11px;
+    color: var(--text-dim);
+  }
+  #rotate-grid .axis-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+    font-weight: 600;
+  }
+  #finish-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  #color-grid {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 5px;
+  }
+  .color-swatch {
+    width: 100%;
+    aspect-ratio: 1;
+    border-radius: 5px;
+    border: 1px solid rgba(255,255,255,0.15);
+    cursor: pointer;
+    padding: 0;
+  }
+  .color-swatch.active {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+  }
+  #selected-part-label {
+    font-size: 11.5px;
+    color: var(--text-dim);
+  }
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12.5px;
+    color: var(--text-dim);
+    cursor: pointer;
+    user-select: none;
+  }
+  .toggle-row input {
+    accent-color: var(--accent);
+  }
+  #status {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  #model-info {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+  }
+  #model-info b { color: var(--text); }
+  .link-btn {
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-size: 11px;
+    cursor: pointer;
+    padding: 0;
+  }
+  .link-btn:hover {
+    color: var(--accent-hover);
+  }
+  #parts-list {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--panel-border);
+    border-radius: 6px;
+    padding: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .part-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .part-row:hover, .part-row.hovered {
+    background: rgba(77, 144, 254, 0.14);
+    color: var(--text);
+  }
+  .part-row.selected {
+    background: rgba(255, 176, 32, 0.16);
+    color: var(--text);
+    box-shadow: inset 2px 0 0 0 #ffb020;
+  }
+  .part-row input {
+    accent-color: var(--accent);
+    flex-shrink: 0;
+  }
+  .part-row.hidden-part {
+    opacity: 0.5;
+  }
+  .part-row .part-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #part-tooltip {
+    position: absolute;
+    display: none;
+    pointer-events: none;
+    background: rgba(20, 21, 24, 0.92);
+    color: #fff;
+    font-size: 12px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 1px solid rgba(255,255,255,0.12);
+    white-space: nowrap;
+    z-index: 5;
+    transform: translate(-50%, -130%);
+  }
+  #loading-overlay {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.55);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 12px;
+    color: var(--text);
+    font-size: 14px;
+    z-index: 10;
+  }
+  #loading-overlay.visible {
+    display: flex;
+  }
+  .spinner {
+    width: 34px;
+    height: 34px;
+    border: 3px solid rgba(255,255,255,0.2);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #viewcube-label {
+    position: absolute;
+    top: 12px;
+    left: 12px;
+    font-size: 11px;
+    color: rgba(255,255,255,0.55);
+    background: rgba(0,0,0,0.35);
+    padding: 4px 8px;
+    border-radius: 4px;
+    pointer-events: none;
+  }
+  input[type="file"] { display: none; }
+  hr.sep {
+    border: none;
+    border-top: 1px solid var(--panel-border);
+    margin: 0;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="sidebar">
+    <div>
+      <h1>STEP Viewer</h1>
+      <div class="section-label">Local, browser-based .step / .stp viewer</div>
+    </div>
+
+    <div>
+      <div id="drop-zone">
+        Drop a .step / .stp file here<br>or click to browse
+      </div>
+      <input type="file" id="file-input" accept=".step,.stp,.STEP,.STP">
+      <div id="file-name" style="margin-top:6px;"></div>
+    </div>
+
+    <div>
+      <div class="section-label">Isometric views</div>
+      <div id="iso-grid">
+        <button class="btn" data-view="iso-frt">Front-R-Top</button>
+        <button class="btn" data-view="iso-flt">Front-L-Top</button>
+        <button class="btn" data-view="iso-brt">Back-R-Top</button>
+        <button class="btn" data-view="iso-blt">Back-L-Top</button>
+      </div>
+    </div>
+
+    <div>
+      <div class="section-label">Axis-aligned views</div>
+      <div id="ortho-grid">
+        <button class="btn" data-view="front">Front</button>
+        <button class="btn" data-view="back">Back</button>
+        <button class="btn" data-view="left">Left</button>
+        <button class="btn" data-view="right">Right</button>
+        <button class="btn" data-view="top">Top</button>
+        <button class="btn" data-view="bottom">Bottom</button>
+      </div>
+    </div>
+
+    <button class="btn wide" id="reset-fit">Fit &amp; Reset View</button>
+    <div class="section-label" style="margin-top:10px;">Download view as PNG</div>
+    <div id="png-scale-grid">
+      <button class="btn" data-scale="1">1&times;</button>
+      <button class="btn" data-scale="2">2&times;</button>
+      <button class="btn" data-scale="4">4&times;</button>
+    </div>
+
+    <hr class="sep">
+
+    <div>
+      <div class="section-label">Rotate model (world axis)</div>
+      <div id="rotate-grid">
+        <span class="axis-label">X</span>
+        <button class="btn" data-axis="x" data-deg="-7.5">&minus;7.5&deg;</button>
+        <div class="angle-field">
+          <input type="number" class="angle-input" data-axis="x" step="0.1" value="0">
+          <span>&deg;</span>
+        </div>
+        <button class="btn" data-axis="x" data-deg="7.5">+7.5&deg;</button>
+        <span class="axis-label">Y</span>
+        <button class="btn" data-axis="y" data-deg="-7.5">&minus;7.5&deg;</button>
+        <div class="angle-field">
+          <input type="number" class="angle-input" data-axis="y" step="0.1" value="0">
+          <span>&deg;</span>
+        </div>
+        <button class="btn" data-axis="y" data-deg="7.5">+7.5&deg;</button>
+        <span class="axis-label">Z</span>
+        <button class="btn" data-axis="z" data-deg="-7.5">&minus;7.5&deg;</button>
+        <div class="angle-field">
+          <input type="number" class="angle-input" data-axis="z" step="0.1" value="0">
+          <span>&deg;</span>
+        </div>
+        <button class="btn" data-axis="z" data-deg="7.5">+7.5&deg;</button>
+      </div>
+      <button class="btn wide" id="reset-rotation" style="margin-top:6px;">Reset Rotation</button>
+    </div>
+
+    <hr class="sep">
+
+    <div>
+      <div class="section-label">Display</div>
+      <label class="toggle-row">
+        <input type="checkbox" id="toggle-ortho">
+        Parallel projection (no perspective)
+      </label>
+      <label class="toggle-row" style="margin-top:6px;">
+        <input type="checkbox" id="toggle-edges" checked>
+        Show edges
+      </label>
+      <label class="toggle-row" style="margin-top:6px;">
+        <input type="checkbox" id="toggle-wireframe">
+        Wireframe
+      </label>
+    </div>
+
+    <hr class="sep">
+
+    <div id="parts-section" style="display:none;">
+      <div class="section-label" style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">
+        <span>Parts</span>
+        <button class="link-btn" id="show-all-parts">Show all</button>
+      </div>
+      <div id="parts-list"></div>
+    </div>
+
+    <hr class="sep" id="parts-sep" style="display:none;">
+
+    <div>
+      <div class="section-label">Material</div>
+      <div id="finish-grid">
+        <button class="btn" data-finish="plastic">Plastic</button>
+        <button class="btn" data-finish="metal">Metal</button>
+        <button class="btn" data-finish="shiny">Shiny</button>
+        <button class="btn" data-finish="matte">Matte</button>
+      </div>
+      <div id="color-grid" style="margin-top:6px;"></div>
+
+      <div style="margin-top:10px;">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <label for="exposure-slider" style="font-size:11.5px; color:var(--text-dim);">Lighting intensity</label>
+          <span id="exposure-value" style="font-size:11px; color:var(--text-dim);">0.20&times;</span>
+        </div>
+        <input type="range" id="exposure-slider" min="0" max="4" step="0.01" value="0.2" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+      </div>
+
+      <div id="hsl-sliders" style="margin-top:10px; display:flex; flex-direction:column; gap:7px;">
+        <div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label for="hue-slider" style="font-size:11.5px; color:var(--text-dim);">Hue</label>
+            <span id="hue-value" style="font-size:11px; color:var(--text-dim);">0&deg;</span>
+          </div>
+          <input type="range" id="hue-slider" min="0" max="360" step="1" value="0" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+        </div>
+        <div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label for="saturation-slider" style="font-size:11.5px; color:var(--text-dim);">Saturation</label>
+            <span id="saturation-value" style="font-size:11px; color:var(--text-dim);">0%</span>
+          </div>
+          <input type="range" id="saturation-slider" min="0" max="100" step="1" value="0" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+        </div>
+        <div>
+          <div style="display:flex; align-items:center; justify-content:space-between;">
+            <label for="brightness-slider" style="font-size:11.5px; color:var(--text-dim);">Brightness</label>
+            <span id="brightness-value" style="font-size:11px; color:var(--text-dim);">50%</span>
+          </div>
+          <input type="range" id="brightness-slider" min="0" max="100" step="1" value="50" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+        </div>
+      </div>
+
+      <div id="selected-part-label" style="margin-top:8px;"></div>
+      <div style="display:flex; gap:6px; margin-top:6px;">
+        <button class="btn" id="apply-selected" style="flex:1;">Apply to Selected</button>
+        <button class="btn" id="apply-all" style="flex:1;">Apply to All Parts</button>
+      </div>
+    </div>
+
+    <hr class="sep">
+
+    <div id="model-info"></div>
+
+    <div style="flex:1;"></div>
+    <div id="status">Ready.</div>
+  </div>
+
+  <div id="viewport">
+    <div id="viewcube-label"></div>
+    <div id="part-tooltip"></div>
+    <div id="loading-overlay">
+      <div class="spinner"></div>
+      <div id="loading-text">Parsing STEP file...</div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
