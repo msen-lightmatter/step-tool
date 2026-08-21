@@ -486,7 +486,13 @@ resizeRenderer();
 // it impossible to dial in a raking highlight or a shadowed side without
 // also changing what you're looking at. Azimuth/elevation are in the same
 // Z-up world space as everything else, orbiting controls.target.
-const DEFAULT_LIGHT = { azimuthDeg: -135, elevationDeg: 35.26 }; // matches the old headlight's angle at the default iso-flt view
+// Deliberately NOT the default view's isometric angle (-135°/35.26°) — an
+// isometric direction is, by definition, equidistant from all three visible
+// faces of an axis-aligned box, so a light placed exactly there lights all
+// three identically (same dot product with every face normal), leaving a
+// default test cube with no visible shading difference between its faces.
+// This angle is offset enough to give each face a clearly distinct grey.
+const DEFAULT_LIGHT = { azimuthDeg: -110, elevationDeg: 55 };
 const lightState = { ...DEFAULT_LIGHT };
 // Every view frames the model with ~15% headroom around its bounding sphere
 // (see fitCameraToModel/applyView/setProjectionMode's 1.15x margins), so an
