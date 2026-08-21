@@ -31,6 +31,15 @@ const saturationSlider = document.getElementById('saturation-slider');
 const saturationValueEl = document.getElementById('saturation-value');
 const brightnessSlider = document.getElementById('brightness-slider');
 const brightnessValueEl = document.getElementById('brightness-value');
+const saveSettingsBtn = document.getElementById('save-settings');
+const loadSettingsBtn = document.getElementById('load-settings');
+const settingsFileInput = document.getElementById('settings-file-input');
+const lightAzimuthSlider = document.getElementById('light-azimuth-slider');
+const lightAzimuthValueEl = document.getElementById('light-azimuth-value');
+const lightElevationSlider = document.getElementById('light-elevation-slider');
+const lightElevationValueEl = document.getElementById('light-elevation-value');
+const resetLightBtn = document.getElementById('reset-light');
+const toggleAllSectionsBtn = document.getElementById('toggle-all-sections');
 
 // ---------- three.js scene setup ----------
 
@@ -239,7 +248,8 @@ function buildPartsList(meshes) {
   partsSep.style.display = meshes.length ? 'block' : 'none';
 }
 
-showAllPartsBtn.addEventListener('click', () => {
+showAllPartsBtn.addEventListener('click', (e) => {
+  e.preventDefault(); // it lives inside the Parts <summary> — don't let the click also collapse the section
   getPickableMeshesIncludingHidden().forEach((mesh) => setPartVisible(mesh, true));
 });
 
@@ -251,6 +261,9 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   };
   tooltipEl.style.left = `${e.clientX - rect.left}px`;
   tooltipEl.style.top = `${e.clientY - rect.top}px`;
+  if (!isDraggingLight) {
+    renderer.domElement.style.cursor = currentGroup && pickLightGizmo(e.clientX, e.clientY) ? 'grab' : '';
+  }
 });
 
 renderer.domElement.addEventListener('pointerleave', () => {
@@ -274,7 +287,23 @@ function pickMeshAtClient(clientX, clientY) {
 
 let pointerDownPos = null;
 renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button === 0 && currentGroup && pickLightGizmo(e.clientX, e.clientY)) {
+    isDraggingLight = true;
+    controls.enabled = false;
+    renderer.domElement.style.cursor = 'grabbing';
+    updateLightFromPointer(e.clientX, e.clientY);
+    return;
+  }
   pointerDownPos = { x: e.clientX, y: e.clientY, button: e.button, shiftKey: e.shiftKey };
+});
+window.addEventListener('pointermove', (e) => {
+  if (isDraggingLight) updateLightFromPointer(e.clientX, e.clientY);
+});
+window.addEventListener('pointerup', () => {
+  if (!isDraggingLight) return;
+  isDraggingLight = false;
+  controls.enabled = true;
+  renderer.domElement.style.cursor = '';
 });
 renderer.domElement.addEventListener('pointerup', (e) => {
   if (!pointerDownPos) return;
@@ -450,20 +479,144 @@ function resizeRenderer() {
 window.addEventListener('resize', resizeRenderer);
 resizeRenderer();
 
+// ---------- key light direction (visible, draggable gizmo) ----------
+
+// Kept independent of the camera on purpose: a light that always sits at the
+// camera (a "headlight") gives identical shading in every view, which makes
+// it impossible to dial in a raking highlight or a shadowed side without
+// also changing what you're looking at. Azimuth/elevation are in the same
+// Z-up world space as everything else, orbiting controls.target.
+const DEFAULT_LIGHT = { azimuthDeg: -135, elevationDeg: 35.26 }; // matches the old headlight's angle at the default iso-flt view
+const lightState = { ...DEFAULT_LIGHT };
+// Every view frames the model with ~15% headroom around its bounding sphere
+// (see fitCameraToModel/applyView/setProjectionMode's 1.15x margins), so an
+// orbit AT that same radius (no flat offset — this must scale with the
+// model, not a fixed distance) stays inside frame in every preset view,
+// including the tighter orthographic frustum, regardless of the model's
+// absolute size.
+const LIGHT_ORBIT_MARGIN = 1.0;
+
+function lightDirFromAngles(azimuthDeg, elevationDeg) {
+  const az = (azimuthDeg * Math.PI) / 180;
+  const el = (elevationDeg * Math.PI) / 180;
+  return new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el));
+}
+
+function anglesFromLightDir(dir) {
+  const elevationDeg = (Math.asin(THREE.MathUtils.clamp(dir.z, -1, 1)) * 180) / Math.PI;
+  const azimuthDeg = (Math.atan2(dir.y, dir.x) * 180) / Math.PI;
+  return { azimuthDeg, elevationDeg };
+}
+
+// A small bright sphere marks the key light's position, plus a thin line
+// back to the model center so its direction reads clearly from any angle.
+// A separate, larger, fully-transparent sphere sits underneath purely as a
+// generous drag target — the visible sphere alone is too small to grab reliably.
+const lightGizmo = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 20, 20),
+  new THREE.MeshBasicMaterial({ color: 0xffd76a, depthTest: false, depthWrite: false })
+);
+lightGizmo.renderOrder = 999;
+scene.add(lightGizmo);
+
+const lightGizmoLine = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3()]),
+  new THREE.LineBasicMaterial({ color: 0xffd76a, transparent: true, opacity: 0.45, depthTest: false })
+);
+lightGizmoLine.renderOrder = 998;
+scene.add(lightGizmoLine);
+
+const lightGizmoHit = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 12, 12),
+  new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthTest: false })
+);
+scene.add(lightGizmoHit);
+
+function setLightGizmoVisible(visible) {
+  lightGizmo.visible = visible;
+  lightGizmoLine.visible = visible;
+}
+setLightGizmoVisible(false); // shown once a model is loaded
+
+function lightOrbitDistance() {
+  return modelRadius * LIGHT_ORBIT_MARGIN;
+}
+
+function updateLightGizmoTransform() {
+  lightGizmo.position.copy(keyLight.position);
+  lightGizmoHit.position.copy(keyLight.position);
+  const displayScale = Math.max(modelRadius * 0.05, 0.5);
+  lightGizmo.scale.setScalar(displayScale);
+  lightGizmoHit.scale.setScalar(displayScale * 2.5); // generous grab radius, invisible
+
+  const target = controls.target;
+  const pos = lightGizmoLine.geometry.attributes.position;
+  pos.setXYZ(0, target.x, target.y, target.z);
+  pos.setXYZ(1, keyLight.position.x, keyLight.position.y, keyLight.position.z);
+  pos.needsUpdate = true;
+}
+
+function pointerToNDC(clientX, clientY) {
+  const rect = renderer.domElement.getBoundingClientRect();
+  return {
+    x: ((clientX - rect.left) / rect.width) * 2 - 1,
+    y: -((clientY - rect.top) / rect.height) * 2 + 1,
+  };
+}
+
+function pickLightGizmo(clientX, clientY) {
+  raycaster.setFromCamera(pointerToNDC(clientX, clientY), camera);
+  return raycaster.intersectObject(lightGizmoHit, false).length > 0;
+}
+
+// Casts the pointer against an imaginary sphere centered on the model
+// (radius = the light's orbit distance) so the light tracks the cursor
+// directly, arcball-style, rather than by incremental drag deltas.
+function updateLightFromPointer(clientX, clientY) {
+  raycaster.setFromCamera(pointerToNDC(clientX, clientY), camera);
+  const dist = lightOrbitDistance();
+  const sphere = new THREE.Sphere(controls.target, dist);
+  const hitPoint = new THREE.Vector3();
+  let dir;
+  if (raycaster.ray.intersectSphere(sphere, hitPoint)) {
+    dir = hitPoint.sub(controls.target).normalize();
+  } else {
+    // Dragged past the sphere's silhouette — fall back to the closest point
+    // on the ray to the model center, so the light still follows smoothly.
+    const closest = new THREE.Vector3();
+    raycaster.ray.closestPointToPoint(controls.target, closest);
+    dir = closest.sub(controls.target).normalize();
+  }
+  const angles = anglesFromLightDir(dir);
+  lightState.azimuthDeg = roundClean(angles.azimuthDeg);
+  lightState.elevationDeg = roundClean(THREE.MathUtils.clamp(angles.elevationDeg, -89, 89));
+  syncLightSlidersFromState();
+}
+
+let isDraggingLight = false;
+
 function updateKeyLights() {
   const target = controls.target;
-  keyLight.position.copy(camera.position);
+  const dist = lightOrbitDistance();
+
+  const keyDir = lightDirFromAngles(lightState.azimuthDeg, lightState.elevationDeg);
+  keyLight.position.copy(target).addScaledVector(keyDir, dist);
   keyLight.target.position.copy(target);
-  // Mirrored through the target (not the world origin) so it lands on the
-  // opposite side of the model, not the opposite side of empty space.
-  fillLight.position.set(2 * target.x - camera.position.x, 2 * target.y - camera.position.y, camera.position.z);
+
+  // Fill stays a softer, lower light on the opposite side of the key light —
+  // the same relationship the old camera-locked rig had, just anchored to
+  // the key light's angle instead of the camera's.
+  const fillDir = lightDirFromAngles(lightState.azimuthDeg + 180, lightState.elevationDeg * 0.5);
+  fillLight.position.copy(target).addScaledVector(fillDir, dist);
   fillLight.target.position.copy(target);
+
+  updateLightGizmoTransform();
 }
 
 renderer.setAnimationLoop(() => {
   controls.update();
   updateKeyLights();
-  updateHoverPick();
+  if (!isDraggingLight) updateHoverPick();
   renderer.render(scene, camera);
 });
 
@@ -506,7 +659,7 @@ document.querySelectorAll('#iso-grid .btn, #ortho-grid .btn').forEach((btn) => {
   btn.addEventListener('click', () => applyView(btn.dataset.view));
 });
 
-resetFitBtn.addEventListener('click', () => applyView('iso-frt'));
+resetFitBtn.addEventListener('click', () => applyView('iso-flt'));
 
 // Rotates the model itself (not the camera) around a fixed world axis,
 // pivoting on the model's own center. The camera/view stays exactly where
@@ -634,6 +787,7 @@ function clearModel() {
   flipGroup.quaternion.identity();
   resetRotationTotals();
   clearPartsList();
+  setLightGizmoVisible(false);
 }
 
 function loadStepFile(file) {
@@ -694,9 +848,10 @@ function onStepParsed(result, file) {
   flipGroup.add(group);
   currentGroup = group;
   buildPartsList(meshList);
+  setLightGizmoVisible(true);
 
   fitCameraToModel();
-  applyView('iso-frt');
+  applyView('iso-flt');
 
   const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
   modelInfoEl.innerHTML =
@@ -828,6 +983,55 @@ function buildMesh(geometryMesh, showEdges) {
   return { mesh, geometry, edges };
 }
 
+// A procedural cube stands in until a real file is loaded, so there's
+// always something on screen to try the controls on. It's built as a normal
+// part/group — same as a loaded STEP file's meshes — so every part
+// interaction (select, hide, material, edges) works on it identically.
+// clearModel() (called at the top of onStepParsed) tears it down exactly
+// like any other loaded model, so loading a real file replaces it for free.
+const DEFAULT_SHAPE_NAME = 'Test cube (default — load a file to replace)';
+
+function loadDefaultTestShape() {
+  clearModel();
+
+  const geometry = new THREE.BoxGeometry(70, 70, 70);
+  geometry.name = DEFAULT_SHAPE_NAME;
+  const material = new THREE.MeshStandardMaterial({
+    color: 0xb0b3b8,
+    metalness: DEFAULT_FINISH.metalness,
+    roughness: DEFAULT_FINISH.roughness,
+    emissiveIntensity: HIGHLIGHT_EMISSIVE_INTENSITY,
+    side: THREE.DoubleSide,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.name = DEFAULT_SHAPE_NAME;
+  mesh.visible = true;
+
+  const outlineMaterial = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
+  const edges = toggleEdgesEl.checked
+    ? new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMaterial)
+    : null;
+  if (edges) edges.renderOrder = mesh.renderOrder + 1;
+  mesh.userData.edges = edges;
+
+  const group = new THREE.Group();
+  group.add(mesh);
+  if (edges) group.add(edges);
+
+  flipGroup.add(group);
+  currentGroup = group;
+  buildPartsList([mesh]);
+  setLightGizmoVisible(true);
+
+  fitCameraToModel();
+  applyView('iso-flt');
+
+  modelInfoEl.innerHTML =
+    `<div><b>Test cube</b></div>` +
+    `<div>Default placeholder — load a file to replace it.</div>`;
+  setStatus('Ready.');
+}
+
 // ---------- PNG export ----------
 
 function roundRectPath(ctx, x, y, w, h, r) {
@@ -838,6 +1042,13 @@ function roundRectPath(ctx, x, y, w, h, r) {
   ctx.arcTo(x, y + h, x, y, r);
   ctx.arcTo(x, y, x + w, y, r);
   ctx.closePath();
+}
+
+// Strips the .step/.stp extension off the loaded file's name for reuse in
+// exported filenames (PNGs, settings JSON) — falls back to a generic name
+// before any file has been loaded.
+function getModelBaseName(fallback) {
+  return (fileNameEl.textContent || fallback).replace(/\.(step|stp)$/i, '');
 }
 
 function getCameraInfoLines() {
@@ -909,7 +1120,10 @@ function getMaterialSummaryLines() {
 
 function getExportLabelLines() {
   const exposureValue = parseFloat(exposureSlider.value).toFixed(2);
-  return [...getCameraInfoLines(), `Lighting                ${exposureValue}×`, ...getMaterialSummaryLines()];
+  const lightLine =
+    `Lighting                ${exposureValue}×` +
+    `  (Az ${lightState.azimuthDeg.toFixed(1)}°, El ${lightState.elevationDeg.toFixed(1)}°)`;
+  return [...getCameraInfoLines(), lightLine, ...getMaterialSummaryLines()];
 }
 
 // Renders one sub-rectangle ("tile") of the full target image using
@@ -977,6 +1191,10 @@ function downloadViewAsPng(scale = 1) {
   offRenderer.setPixelRatio(1);
   offRenderer.setClearColor(0x000000, 0);
 
+  // The light gizmo is a UI aid, not part of the model — never bake it into the export.
+  const gizmoWasVisible = lightGizmo.visible;
+  setLightGizmoVisible(false);
+
   const flipped = new Uint8ClampedArray(w * h * 4);
   const cols = Math.ceil(w / EXPORT_TILE_SIZE);
   const rows = Math.ceil(h / EXPORT_TILE_SIZE);
@@ -992,6 +1210,7 @@ function downloadViewAsPng(scale = 1) {
   }
   camera.clearViewOffset();
   offRenderer.dispose();
+  setLightGizmoVisible(gizmoWasVisible);
 
   // The camera-info text below is drawn as a flat 2D overlay on this plain
   // canvas, never as an object inside the 3D scene, so it can never land "on"
@@ -1030,9 +1249,10 @@ function downloadViewAsPng(scale = 1) {
   composed.toBlob((blob) => {
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const scaleTag = scale !== 1 ? `-${scale}x` : '';
+    const baseName = getModelBaseName('step-view');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `step-view${scaleTag}-${stamp}.png`;
+    a.download = `${baseName}${scaleTag}-${stamp}.png`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1042,6 +1262,175 @@ function downloadViewAsPng(scale = 1) {
 
 document.querySelectorAll('#png-scale-grid .btn').forEach((btn) => {
   btn.addEventListener('click', () => downloadViewAsPng(parseFloat(btn.dataset.scale)));
+});
+
+// ---------- settings export/import ----------
+
+// The model's own quaternion is the ground truth for restoring rotation
+// exactly; rotationTotals is just the odometer readout shown in the angle
+// fields (world-axis rotations don't commute, so totals alone can't
+// reconstruct orientation — see the comment above rotationTotals).
+function collectSettings() {
+  const meshes = getPickableMeshesIncludingHidden();
+  return {
+    type: 'step-viewer-settings',
+    version: 1,
+    camera: {
+      projection: camera.isOrthographicCamera ? 'orthographic' : 'perspective',
+      position: camera.position.toArray(),
+      target: controls.target.toArray(),
+      up: camera.up.toArray(),
+      zoom: camera.isOrthographicCamera ? camera.zoom : 1,
+    },
+    modelRotation: {
+      quaternion: flipGroup.quaternion.toArray(),
+      totals: { ...rotationTotals },
+    },
+    lightingIntensity: parseFloat(exposureSlider.value),
+    light: { azimuthDeg: lightState.azimuthDeg, elevationDeg: lightState.elevationDeg },
+    display: {
+      edges: toggleEdgesEl.checked,
+      wireframe: toggleWireframeEl.checked,
+    },
+    parts: meshes.map((mesh, i) => {
+      const mat = meshMaterials(mesh)[0];
+      return {
+        index: i,
+        name: mesh.name || null,
+        visible: mesh.visible,
+        colorHex: `#${mat.color.getHexString()}`,
+        metalness: mat.metalness,
+        roughness: mat.roughness,
+      };
+    }),
+  };
+}
+
+// Matches saved parts back to this model's meshes by name first (so settings
+// carry over sensibly to a different model that shares part names), falling
+// back to index (so a plain re-load of the same file lines up even when
+// parts are unnamed or names collide).
+function applyPartsSettings(savedParts) {
+  const meshes = getPickableMeshesIncludingHidden();
+  const byName = new Map();
+  meshes.forEach((mesh) => {
+    const key = mesh.name || '';
+    if (!byName.has(key)) byName.set(key, []);
+    byName.get(key).push(mesh);
+  });
+
+  savedParts.forEach((sp) => {
+    let mesh = null;
+    if (sp.name && byName.has(sp.name) && byName.get(sp.name).length) {
+      mesh = byName.get(sp.name).shift();
+    } else if (meshes[sp.index]) {
+      mesh = meshes[sp.index];
+    }
+    if (!mesh) return;
+
+    setPartVisible(mesh, sp.visible !== false);
+    if (sp.colorHex) applyColorToMesh(mesh, parseInt(sp.colorHex.slice(1), 16));
+    if (typeof sp.metalness === 'number' && typeof sp.roughness === 'number') {
+      meshMaterials(mesh).forEach((m) => {
+        m.metalness = sp.metalness;
+        m.roughness = sp.roughness;
+      });
+    }
+  });
+}
+
+function applySettings(settings) {
+  if (!settings || settings.type !== 'step-viewer-settings') {
+    setStatus('Not a recognized settings file.');
+    return;
+  }
+
+  if (settings.display) {
+    if (typeof settings.display.edges === 'boolean') {
+      toggleEdgesEl.checked = settings.display.edges;
+      toggleEdgesEl.dispatchEvent(new Event('change'));
+    }
+    if (typeof settings.display.wireframe === 'boolean') {
+      toggleWireframeEl.checked = settings.display.wireframe;
+      toggleWireframeEl.dispatchEvent(new Event('change'));
+    }
+  }
+
+  if (typeof settings.lightingIntensity === 'number') {
+    exposureSlider.value = settings.lightingIntensity;
+    applyLightingIntensity(settings.lightingIntensity);
+  }
+
+  if (settings.light) {
+    if (typeof settings.light.azimuthDeg === 'number') lightState.azimuthDeg = settings.light.azimuthDeg;
+    if (typeof settings.light.elevationDeg === 'number') lightState.elevationDeg = settings.light.elevationDeg;
+    syncLightSlidersFromState();
+  }
+
+  if (settings.modelRotation) {
+    if (Array.isArray(settings.modelRotation.quaternion) && settings.modelRotation.quaternion.length === 4) {
+      flipGroup.quaternion.fromArray(settings.modelRotation.quaternion);
+    }
+    const totals = settings.modelRotation.totals;
+    if (totals) {
+      ['x', 'y', 'z'].forEach((axisName) => {
+        if (typeof totals[axisName] === 'number') {
+          rotationTotals[axisName] = totals[axisName];
+          if (angleInputs[axisName]) angleInputs[axisName].value = totals[axisName];
+        }
+      });
+    }
+  }
+
+  if (settings.camera) {
+    const wantOrtho = settings.camera.projection === 'orthographic';
+    setProjectionMode(wantOrtho);
+    toggleOrthoEl.checked = wantOrtho;
+    if (Array.isArray(settings.camera.position)) camera.position.fromArray(settings.camera.position);
+    if (Array.isArray(settings.camera.up)) camera.up.fromArray(settings.camera.up);
+    if (Array.isArray(settings.camera.target)) controls.target.fromArray(settings.camera.target);
+    if (wantOrtho && typeof settings.camera.zoom === 'number') camera.zoom = settings.camera.zoom;
+    camera.lookAt(controls.target);
+    updateCameraProjection();
+    controls.update();
+  }
+
+  if (Array.isArray(settings.parts) && currentGroup) {
+    applyPartsSettings(settings.parts);
+  }
+
+  setStatus('Settings loaded.');
+}
+
+saveSettingsBtn.addEventListener('click', () => {
+  const settings = collectSettings();
+  const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const baseName = getModelBaseName('step-viewer');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${baseName}-settings-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(a.href);
+});
+
+loadSettingsBtn.addEventListener('click', () => settingsFileInput.click());
+settingsFileInput.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      applySettings(JSON.parse(reader.result));
+    } catch (err) {
+      console.error(err);
+      setStatus('Error reading settings file.');
+    }
+  };
+  reader.readAsText(file);
+  settingsFileInput.value = '';
 });
 
 // ---------- UI wiring ----------
@@ -1095,8 +1484,80 @@ function applyLightingIntensity(v) {
 exposureSlider.addEventListener('input', () => applyLightingIntensity(parseFloat(exposureSlider.value)));
 applyLightingIntensity(parseFloat(exposureSlider.value)); // match the slider's HTML default on load
 
+function syncLightSlidersFromState() {
+  lightAzimuthSlider.value = lightState.azimuthDeg;
+  lightElevationSlider.value = lightState.elevationDeg;
+  lightAzimuthValueEl.textContent = `${Math.round(lightState.azimuthDeg)}°`;
+  lightElevationValueEl.textContent = `${Math.round(lightState.elevationDeg)}°`;
+}
+lightAzimuthSlider.addEventListener('input', () => {
+  lightState.azimuthDeg = parseFloat(lightAzimuthSlider.value);
+  lightAzimuthValueEl.textContent = `${Math.round(lightState.azimuthDeg)}°`;
+});
+lightElevationSlider.addEventListener('input', () => {
+  lightState.elevationDeg = parseFloat(lightElevationSlider.value);
+  lightElevationValueEl.textContent = `${Math.round(lightState.elevationDeg)}°`;
+});
+resetLightBtn.addEventListener('click', () => {
+  lightState.azimuthDeg = DEFAULT_LIGHT.azimuthDeg;
+  lightState.elevationDeg = DEFAULT_LIGHT.elevationDeg;
+  syncLightSlidersFromState();
+});
+syncLightSlidersFromState(); // paint the precise default (e.g. 35.26° → "35°"), overriding the HTML placeholder
+
 buildColorGrid();
 updateApplyAllState();
 updateSelectedPartLabel();
-setStatus('Ready. Load a .step or .stp file to begin.');
-applyView('iso-frt');
+loadDefaultTestShape();
+
+// ---------- collapsible sidebar sections ----------
+
+// Every section defaults open (matching prior behavior); this only ever
+// needs to CLOSE the ones a returning user had collapsed last time.
+const COLLAPSE_STORAGE_KEY = 'step-viewer-collapsed-sections';
+
+function loadCollapsedSectionIds() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSE_STORAGE_KEY) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveCollapsedSectionIds(ids) {
+  try {
+    localStorage.setItem(COLLAPSE_STORAGE_KEY, JSON.stringify([...ids]));
+  } catch {
+    // localStorage unavailable (private browsing, etc.) — collapse state just won't persist.
+  }
+}
+
+function getAllCollapsibleSections() {
+  return [...document.querySelectorAll('details.collapsible[id]')];
+}
+
+// Label reflects what the button will DO next: if every section is already
+// collapsed, offer to expand; otherwise (any open) offer to collapse.
+function updateToggleAllSectionsLabel() {
+  const allCollapsed = getAllCollapsibleSections().every((d) => !d.open);
+  toggleAllSectionsBtn.textContent = allCollapsed ? 'Expand all' : 'Collapse all';
+}
+
+const collapsedSectionIds = loadCollapsedSectionIds();
+getAllCollapsibleSections().forEach((details) => {
+  if (collapsedSectionIds.has(details.id)) details.open = false;
+  details.addEventListener('toggle', () => {
+    if (details.open) collapsedSectionIds.delete(details.id);
+    else collapsedSectionIds.add(details.id);
+    saveCollapsedSectionIds(collapsedSectionIds);
+    updateToggleAllSectionsLabel();
+  });
+});
+updateToggleAllSectionsLabel();
+
+toggleAllSectionsBtn.addEventListener('click', () => {
+  const shouldExpand = getAllCollapsibleSections().every((d) => !d.open);
+  getAllCollapsibleSections().forEach((d) => {
+    d.open = shouldExpand;
+  });
+});
