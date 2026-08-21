@@ -72,11 +72,19 @@ const BASE_FILL_INTENSITY = 0.45;
 const hemiLight = new THREE.HemisphereLight(0xffffff, 0x2b2d33, BASE_HEMI_INTENSITY);
 scene.add(hemiLight);
 
+// DirectionalLight aims at .target, which defaults to world origin (0,0,0)
+// and — unlike position — isn't picked up unless it's also in the scene
+// graph. Without this, a STEP file whose centroid isn't near the origin
+// (most of them) gets a "headlight" aimed at empty space near the model
+// rather than at the model itself, and how well-lit it looks swings
+// unpredictably with view angle instead of staying consistent.
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
 scene.add(keyLight);
+scene.add(keyLight.target);
 
 const fillLight = new THREE.DirectionalLight(0xffffff, BASE_FILL_INTENSITY);
 scene.add(fillLight);
+scene.add(fillLight.target);
 
 const grid = new THREE.GridHelper(1000, 20, 0x444444, 0x2c2e33);
 grid.rotation.x = Math.PI / 2; // lie flat in the XY plane (Z-up)
@@ -443,8 +451,13 @@ window.addEventListener('resize', resizeRenderer);
 resizeRenderer();
 
 function updateKeyLights() {
+  const target = controls.target;
   keyLight.position.copy(camera.position);
-  fillLight.position.set(-camera.position.x, -camera.position.y, camera.position.z);
+  keyLight.target.position.copy(target);
+  // Mirrored through the target (not the world origin) so it lands on the
+  // opposite side of the model, not the opposite side of empty space.
+  fillLight.position.set(2 * target.x - camera.position.x, 2 * target.y - camera.position.y, camera.position.z);
+  fillLight.target.position.copy(target);
 }
 
 renderer.setAnimationLoop(() => {
@@ -834,7 +847,69 @@ function getCameraInfoLines() {
   return [
     `Camera position (mm)   X ${p.x.toFixed(1)}   Y ${p.y.toFixed(1)}   Z ${p.z.toFixed(1)}`,
     `Camera angle            X ${toDeg(r.x)}°   Y ${toDeg(r.y)}°   Z ${toDeg(r.z)}°`,
+    // The camera never moves when you use Rotate Model (it spins the model
+    // itself, in place) — so without this line the export would have no
+    // record of that rotation at all, even though it changes what's shown.
+    `Model rotation          X ${rotationTotals.x}°   Y ${rotationTotals.y}°   Z ${rotationTotals.z}°`,
   ];
+}
+
+// Matches a mesh's live metalness/roughness back to a finish name so the
+// label reads "Metal", not "m0.82/r0.42" — falls back to the raw numbers for
+// anything that doesn't line up with a preset (e.g. mid-drag HSB tweaks).
+function getFinishLabel(metalness, roughness) {
+  const eps = 0.02;
+  for (const [name, preset] of Object.entries(FINISH_PRESETS)) {
+    if (Math.abs(metalness - preset.metalness) < eps && Math.abs(roughness - preset.roughness) < eps) {
+      return name.charAt(0).toUpperCase() + name.slice(1);
+    }
+  }
+  if (Math.abs(metalness - DEFAULT_FINISH.metalness) < eps && Math.abs(roughness - DEFAULT_FINISH.roughness) < eps) {
+    return 'Default';
+  }
+  return `Custom (m${metalness.toFixed(2)}/r${roughness.toFixed(2)})`;
+}
+
+// Groups every currently-visible part by its exact (color, finish) so the
+// label stays short and readable even on a model with thousands of parts —
+// most of the time everything collapses to one or a handful of rows, which
+// is exactly what you'd need to recreate the look.
+const MATERIAL_SUMMARY_MAX_ROWS = 8;
+
+function getMaterialSummaryLines() {
+  const visibleMeshes = getPickableMeshes();
+  if (visibleMeshes.length === 0) return [];
+
+  const counts = new Map();
+  visibleMeshes.forEach((mesh) => {
+    const mat = meshMaterials(mesh)[0];
+    const colorHex = `#${mat.color.getHexString()}`;
+    const finishLabel = getFinishLabel(mat.metalness, mat.roughness);
+    const key = `${colorHex}|${finishLabel}`;
+    const entry = counts.get(key);
+    if (entry) entry.count += 1;
+    else counts.set(key, { count: 1, colorHex, finishLabel });
+  });
+
+  const sorted = [...counts.values()].sort((a, b) => b.count - a.count);
+  const shown = sorted.slice(0, MATERIAL_SUMMARY_MAX_ROWS);
+  const extra = sorted.length - shown.length;
+
+  const countWidth = Math.max(...shown.map((e) => String(e.count).length));
+  const finishWidth = Math.max(...shown.map((e) => e.finishLabel.length));
+  const lines = [`Materials (${visibleMeshes.length} part${visibleMeshes.length === 1 ? '' : 's'})`];
+  shown.forEach((e) => {
+    const countStr = String(e.count).padStart(countWidth);
+    const finishStr = e.finishLabel.padEnd(finishWidth);
+    lines.push(`  ${countStr}×  ${finishStr}  ${e.colorHex}`);
+  });
+  if (extra > 0) lines.push(`  +${extra} more`);
+  return lines;
+}
+
+function getExportLabelLines() {
+  const exposureValue = parseFloat(exposureSlider.value).toFixed(2);
+  return [...getCameraInfoLines(), `Lighting                ${exposureValue}×`, ...getMaterialSummaryLines()];
 }
 
 // Renders one sub-rectangle ("tile") of the full target image using
@@ -927,14 +1002,16 @@ function downloadViewAsPng(scale = 1) {
   const ctx = composed.getContext('2d');
   ctx.putImageData(new ImageData(flipped, w, h), 0, 0);
 
-  const lines = getCameraInfoLines();
+  const lines = getExportLabelLines();
   const fontSize = Math.round(12 * dpr);
   const lineHeight = Math.round(fontSize * 1.6);
   const padX = Math.round(10 * dpr);
   const padY = Math.round(8 * dpr);
   const margin = Math.round(16 * dpr);
 
-  ctx.font = `${fontSize}px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, monospace`;
+  // Monospace so the columns of numbers/labels actually line up — this is a
+  // technical readout meant to be read precisely, not display copy.
+  ctx.font = `${fontSize}px "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace`;
   ctx.textBaseline = 'top';
   const boxWidth = Math.max(...lines.map((l) => ctx.measureText(l).width)) + padX * 2;
   const boxHeight = lineHeight * lines.length + padY * 2 - (lineHeight - fontSize);
