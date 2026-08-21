@@ -157,6 +157,11 @@
     grid-template-columns: 1fr 1fr;
     gap: 6px;
   }
+  #hero-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
   #reset-fit {
     margin-top: 2px;
   }
@@ -168,6 +173,12 @@
   #rotate-grid {
     display: grid;
     grid-template-columns: 16px 1fr 58px 1fr;
+    gap: 6px;
+    align-items: center;
+  }
+  #camera-angle-grid {
+    display: grid;
+    grid-template-columns: 16px 1fr 72px 1fr;
     gap: 6px;
     align-items: center;
   }
@@ -199,7 +210,7 @@
     font-size: 11px;
     color: var(--text-dim);
   }
-  #rotate-grid .axis-label {
+  #rotate-grid .axis-label, #camera-angle-grid .axis-label {
     font-size: 12px;
     color: var(--text-dim);
     text-align: center;
@@ -212,7 +223,7 @@
   }
   #color-grid {
     display: grid;
-    grid-template-columns: repeat(8, 1fr);
+    grid-template-columns: repeat(6, 1fr);
     gap: 5px;
   }
   .color-swatch {
@@ -409,6 +420,20 @@
 
     <hr class="sep">
 
+    <details class="collapsible" id="section-hero" open>
+      <summary class="section-toggle"><span class="section-label">Hero views</span></summary>
+      <div id="hero-grid">
+        <button class="btn" data-view="hero-fr">Front-R</button>
+        <button class="btn" data-view="hero-fl">Front-L</button>
+        <button class="btn" data-view="hero-br">Back-R</button>
+        <button class="btn" data-view="hero-bl">Back-L</button>
+        <button class="btn" data-view="hero-top-front">Top-Front</button>
+        <button class="btn" data-view="hero-top-back">Top-Back</button>
+      </div>
+    </details>
+
+    <hr class="sep">
+
     <details class="collapsible" id="section-view" open>
       <summary class="section-toggle"><span class="section-label">View</span></summary>
       <button class="btn wide" id="reset-fit">Fit &amp; Reset View</button>
@@ -416,6 +441,35 @@
         <input type="checkbox" id="toggle-ortho">
         Parallel projection
       </label>
+
+      <div class="section-label" style="margin-top:10px;">Camera angle</div>
+      <div id="camera-angle-grid">
+        <span class="axis-label">A</span>
+        <button class="btn" data-camera-axis="azimuth" data-nudge="-7.5">&minus;7.5&deg;</button>
+        <div class="angle-field">
+          <input type="number" id="camera-azimuth-input" step="0.1" min="-180" max="180" value="0">
+          <span>&deg;</span>
+        </div>
+        <button class="btn" data-camera-axis="azimuth" data-nudge="7.5">+7.5&deg;</button>
+        <span class="axis-label">E</span>
+        <button class="btn" data-camera-axis="elevation" data-nudge="-7.5">&minus;7.5&deg;</button>
+        <div class="angle-field">
+          <input type="number" id="camera-elevation-input" step="0.1" min="-89" max="89" value="0">
+          <span>&deg;</span>
+        </div>
+        <button class="btn" data-camera-axis="elevation" data-nudge="7.5">+7.5&deg;</button>
+        <span class="axis-label">D</span>
+        <button class="btn" data-camera-axis="distance" data-nudge="0.9">&minus;10%</button>
+        <div class="angle-field">
+          <input type="number" id="camera-distance-input" step="1" min="0.01" value="0">
+          <span>mm</span>
+        </div>
+        <button class="btn" data-camera-axis="distance" data-nudge="1.111">+10%</button>
+      </div>
+      <div style="display:flex; justify-content:flex-end; margin-top:6px;">
+        <button class="link-btn" id="copy-camera-angle">Copy</button>
+      </div>
+      <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">Azimuth/Elevation/Distance from what the camera's looking at — orbit, target, view presets, and these fields all stay in sync. Hand the numbers to a 3D artist to match the shot in any other software.</div>
     </details>
 
     <hr class="sep">
@@ -460,12 +514,38 @@
         <input type="checkbox" id="toggle-wireframe">
         Wireframe
       </label>
+      <label class="toggle-row" style="margin-top:6px;">
+        <input type="checkbox" id="toggle-shadows">
+        Cast shadows
+      </label>
+
+      <div style="margin-top:10px;">
+        <label class="toggle-row">
+          <input type="checkbox" id="toggle-background" checked>
+          Background color
+        </label>
+        <div id="background-color-row" style="display:flex; align-items:center; gap:6px; margin-top:6px;">
+          <input type="color" id="background-color-picker" value="#ffffff" style="width:30px; height:30px; padding:0; border:1px solid var(--panel-border); border-radius:6px; background:none; cursor:pointer;">
+          <input type="text" id="background-color-hex" value="#ffffff" maxlength="7" spellcheck="false" style="flex:1; min-width:0; background:#2f323a; border:1px solid var(--panel-border); border-radius:6px; color:var(--text); font-size:12px; padding:6px 8px; font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;">
+        </div>
+        <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">Unchecked = transparent, live and in PNG exports.</div>
+      </div>
+
       <div style="margin-top:10px;">
         <div style="display:flex; align-items:center; justify-content:space-between;">
           <label for="exposure-slider" style="font-size:11.5px; color:var(--text-dim);">Lighting intensity</label>
           <span id="exposure-value" style="font-size:11px; color:var(--text-dim);">0.20&times;</span>
         </div>
         <input type="range" id="exposure-slider" min="0" max="4" step="0.01" value="0.2" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+      </div>
+
+      <div style="margin-top:10px;" id="softness-row">
+        <div style="display:flex; align-items:center; justify-content:space-between;">
+          <label for="softness-slider" style="font-size:11.5px; color:var(--text-dim);">Light softness</label>
+          <span id="softness-value" style="font-size:11px; color:var(--text-dim);">0.0</span>
+        </div>
+        <input type="range" id="softness-slider" min="0" max="20" step="0.5" value="0" style="width:100%; margin-top:2px; accent-color: var(--accent);">
+        <div style="font-size:11px; color:var(--text-dim); margin-top:4px;">Sharp at 0, fuzzier as it rises. Only visible with Cast shadows on.</div>
       </div>
 
       <details class="collapsible" id="section-light-direction" style="margin-top:10px;" open>
@@ -497,28 +577,9 @@
       </div>
       <div id="color-grid" style="margin-top:6px;"></div>
 
-      <div id="hsl-sliders" style="margin-top:10px; display:flex; flex-direction:column; gap:7px;">
-        <div>
-          <div style="display:flex; align-items:center; justify-content:space-between;">
-            <label for="hue-slider" style="font-size:11.5px; color:var(--text-dim);">Hue</label>
-            <span id="hue-value" style="font-size:11px; color:var(--text-dim);">0&deg;</span>
-          </div>
-          <input type="range" id="hue-slider" min="0" max="360" step="1" value="0" style="width:100%; margin-top:2px; accent-color: var(--accent);">
-        </div>
-        <div>
-          <div style="display:flex; align-items:center; justify-content:space-between;">
-            <label for="saturation-slider" style="font-size:11.5px; color:var(--text-dim);">Saturation</label>
-            <span id="saturation-value" style="font-size:11px; color:var(--text-dim);">0%</span>
-          </div>
-          <input type="range" id="saturation-slider" min="0" max="100" step="1" value="0" style="width:100%; margin-top:2px; accent-color: var(--accent);">
-        </div>
-        <div>
-          <div style="display:flex; align-items:center; justify-content:space-between;">
-            <label for="brightness-slider" style="font-size:11.5px; color:var(--text-dim);">Brightness</label>
-            <span id="brightness-value" style="font-size:11px; color:var(--text-dim);">50%</span>
-          </div>
-          <input type="range" id="brightness-slider" min="0" max="100" step="1" value="50" style="width:100%; margin-top:2px; accent-color: var(--accent);">
-        </div>
+      <div style="display:flex; align-items:center; gap:6px; margin-top:8px;">
+        <input type="color" id="appearance-color-picker" value="#b0b3b8" style="width:30px; height:30px; padding:0; border:1px solid var(--panel-border); border-radius:6px; background:none; cursor:pointer;">
+        <input type="text" id="appearance-color-hex" value="#b0b3b8" maxlength="7" spellcheck="false" style="flex:1; min-width:0; background:#2f323a; border:1px solid var(--panel-border); border-radius:6px; color:var(--text); font-size:12px; padding:6px 8px; font-family: 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;">
       </div>
 
       <div id="selected-part-label" style="margin-top:8px;"></div>

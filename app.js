@@ -11,6 +11,10 @@ const loadingText = document.getElementById('loading-text');
 const toggleEdgesEl = document.getElementById('toggle-edges');
 const toggleWireframeEl = document.getElementById('toggle-wireframe');
 const toggleOrthoEl = document.getElementById('toggle-ortho');
+const cameraAzimuthInput = document.getElementById('camera-azimuth-input');
+const cameraElevationInput = document.getElementById('camera-elevation-input');
+const cameraDistanceInput = document.getElementById('camera-distance-input');
+const copyCameraAngleBtn = document.getElementById('copy-camera-angle');
 const resetFitBtn = document.getElementById('reset-fit');
 const resetRotationBtn = document.getElementById('reset-rotation');
 const viewport = document.getElementById('viewport');
@@ -25,12 +29,11 @@ const applySelectedBtn = document.getElementById('apply-selected');
 const applyAllBtn = document.getElementById('apply-all');
 const exposureSlider = document.getElementById('exposure-slider');
 const exposureValueEl = document.getElementById('exposure-value');
-const hueSlider = document.getElementById('hue-slider');
-const hueValueEl = document.getElementById('hue-value');
-const saturationSlider = document.getElementById('saturation-slider');
-const saturationValueEl = document.getElementById('saturation-value');
-const brightnessSlider = document.getElementById('brightness-slider');
-const brightnessValueEl = document.getElementById('brightness-value');
+const softnessSlider = document.getElementById('softness-slider');
+const softnessValueEl = document.getElementById('softness-value');
+const softnessRowEl = document.getElementById('softness-row');
+const appearanceColorPicker = document.getElementById('appearance-color-picker');
+const appearanceColorHexInput = document.getElementById('appearance-color-hex');
 const saveSettingsBtn = document.getElementById('save-settings');
 const loadSettingsBtn = document.getElementById('load-settings');
 const settingsFileInput = document.getElementById('settings-file-input');
@@ -40,6 +43,11 @@ const lightElevationSlider = document.getElementById('light-elevation-slider');
 const lightElevationValueEl = document.getElementById('light-elevation-value');
 const resetLightBtn = document.getElementById('reset-light');
 const toggleAllSectionsBtn = document.getElementById('toggle-all-sections');
+const toggleShadowsEl = document.getElementById('toggle-shadows');
+const toggleBackgroundEl = document.getElementById('toggle-background');
+const backgroundColorRowEl = document.getElementById('background-color-row');
+const backgroundColorPicker = document.getElementById('background-color-picker');
+const backgroundColorHexInput = document.getElementById('background-color-hex');
 
 // ---------- three.js scene setup ----------
 
@@ -47,7 +55,11 @@ const toggleAllSectionsBtn = document.getElementById('toggle-all-sections');
 // back a transparent-background frame from this same canvas/context.
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
 renderer.setPixelRatio(window.devicePixelRatio || 1);
-renderer.setClearColor(0x1b1d21);
+renderer.setClearColor(0xffffff); // overridden immediately below by the Background color control's default
+// VSM (not PCFSoft) because it's the shadow type whose blur radius is
+// actually controllable via light.shadow.radius — PCFSoft ignores that
+// property, which is what the Light Softness slider below drives.
+renderer.shadowMap.type = THREE.VSMShadowMap;
 // MeshStandardMaterial (used for metalness/roughness) needs these to render
 // with correct contrast/saturation — without them PBR materials look washed out.
 renderer.outputEncoding = THREE.sRGBEncoding;
@@ -88,6 +100,10 @@ scene.add(hemiLight);
 // rather than at the model itself, and how well-lit it looks swings
 // unpredictably with view angle instead of staying consistent.
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.1);
+keyLight.castShadow = false; // flipped by the Cast Shadows toggle
+keyLight.shadow.bias = -0.0015; // avoids shadow-acne self-shadowing artifacts
+keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.blurSamples = 16; // smoother blur at higher Light Softness values
 scene.add(keyLight);
 scene.add(keyLight.target);
 
@@ -99,6 +115,17 @@ const grid = new THREE.GridHelper(1000, 20, 0x444444, 0x2c2e33);
 grid.rotation.x = Math.PI / 2; // lie flat in the XY plane (Z-up)
 grid.visible = false;
 scene.add(grid);
+
+// ShadowMaterial renders fully transparent except where a shadow lands on
+// it — so this plane is invisible on its own (in the live view AND in a
+// transparent-background PNG export) and only ever shows up as a soft dark
+// patch under the model when Cast Shadows is on. PlaneGeometry already lies
+// flat in the XY plane with its normal along +Z, which is exactly "ground"
+// for this Z-up scene, so no rotation is needed (unlike GridHelper above).
+const groundPlane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShadowMaterial({ opacity: 0.35 }));
+groundPlane.receiveShadow = true;
+groundPlane.visible = false; // shown only while Cast Shadows is checked
+scene.add(groundPlane);
 
 const modelRoot = new THREE.Object3D();
 scene.add(modelRoot);
@@ -169,7 +196,7 @@ function setSelectedMesh(mesh) {
   updateSelectedPartLabel();
   // Show the newly-selected part's actual current color as the sliders'
   // starting point — a display sync only, doesn't touch pendingColorHex.
-  if (selectedMesh) syncSlidersToColor(meshMaterials(selectedMesh)[0].color.getHex());
+  if (selectedMesh) syncAppearanceColorInputs(meshMaterials(selectedMesh)[0].color.getHex());
 }
 
 function updateHoverPick() {
@@ -336,12 +363,7 @@ const FINISH_PRESETS = {
 };
 const DEFAULT_FINISH = { metalness: 0.05, roughness: 0.55 };
 
-const COLOR_PALETTE = [
-  '#e53935', '#fb8c00', '#fdd835', '#7cb342',
-  '#00897b', '#29b6f6', '#1e88e5', '#5e35b1',
-  '#d81b60', '#6d4c41', '#9e9e9e', '#455a64',
-  '#000000', '#ffffff', '#c0c0c0', '#d4af37',
-];
+const COLOR_PALETTE = ['#e53935', '#43a047', '#1e88e5', '#c0c0c0', '#9e9e9e', '#455a64'];
 
 let pendingFinish = null; // key into FINISH_PRESETS, chosen but not necessarily applied yet
 let pendingColorHex = null; // number (0xRRGGBB), same
@@ -375,11 +397,16 @@ function updateApplyAllState() {
   applyAllBtn.disabled = !pendingFinish && pendingColorHex === null;
 }
 
+// Finish buttons apply to every part immediately (matching "Apply to All
+// Parts") rather than just previewing on a selection — a quick one-click
+// preset. "Apply to Selected"/"Apply to All Parts" below remain for
+// re-applying the current finish+color pick together, e.g. after also
+// choosing a color, or to just one part on its own.
 document.querySelectorAll('#finish-grid .btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     pendingFinish = btn.dataset.finish;
     document.querySelectorAll('#finish-grid .btn').forEach((b) => b.classList.toggle('active', b === btn));
-    if (selectedMesh) applyFinishToMesh(selectedMesh, pendingFinish);
+    getPickableMeshesIncludingHidden().forEach((mesh) => applyFinishToMesh(mesh, pendingFinish));
     updateApplyAllState();
   });
 });
@@ -390,16 +417,46 @@ function buildColorGrid() {
     btn.className = 'color-swatch';
     btn.style.background = hex;
     btn.title = hex;
-    btn.addEventListener('click', () => {
-      pendingColorHex = parseInt(hex.slice(1), 16);
-      document.querySelectorAll('.color-swatch').forEach((b) => b.classList.toggle('active', b === btn));
-      syncSlidersToColor(pendingColorHex);
-      if (selectedMesh) applyColorToMesh(selectedMesh, pendingColorHex);
-      updateApplyAllState();
-    });
+    btn.addEventListener('click', () => choosePendingColor(parseInt(hex.slice(1), 16)));
     colorGridEl.appendChild(btn);
   });
 }
+
+// Pure display sync — shows a color in the hex field + native picker
+// without touching pendingColorHex or applying anything. Used when a part
+// is selected, to show its current color as a starting point.
+function syncAppearanceColorInputs(hex) {
+  const normalized = `#${hex.toString(16).padStart(6, '0')}`;
+  appearanceColorPicker.value = normalized;
+  appearanceColorHexInput.value = normalized;
+}
+
+// The single path every color choice goes through — a swatch click, the
+// native picker, or typing a hex code — so they all behave identically:
+// preview live on the current selection (if any), and highlight the
+// matching swatch if the color happens to be one of the presets.
+function choosePendingColor(hex) {
+  pendingColorHex = hex;
+  document.querySelectorAll('.color-swatch').forEach((b) => {
+    b.classList.toggle('active', parseInt(b.title.slice(1), 16) === hex);
+  });
+  syncAppearanceColorInputs(hex);
+  if (selectedMesh) applyColorToMesh(selectedMesh, hex);
+  updateApplyAllState();
+}
+
+appearanceColorPicker.addEventListener('input', () => {
+  choosePendingColor(parseHexColor(appearanceColorPicker.value));
+});
+
+appearanceColorHexInput.addEventListener('change', () => {
+  const hex = parseHexColor(appearanceColorHexInput.value);
+  if (hex === null) {
+    appearanceColorHexInput.value = appearanceColorPicker.value;
+    return;
+  }
+  choosePendingColor(hex);
+});
 
 applySelectedBtn.addEventListener('click', () => {
   if (selectedMesh) applyPendingToMesh(selectedMesh);
@@ -407,50 +464,6 @@ applySelectedBtn.addEventListener('click', () => {
 
 applyAllBtn.addEventListener('click', () => {
   getPickableMeshesIncludingHidden().forEach((mesh) => applyPendingToMesh(mesh));
-});
-
-// ---------- HSL sliders ----------
-
-// Pure display sync — sets slider positions/readouts to match a color
-// without touching pendingColorHex or applying anything. Used when a part
-// is selected (to show its current color as a starting point) and when a
-// swatch is clicked (to keep the sliders showing the same color).
-function syncSlidersToColor(hex) {
-  const c = new THREE.Color(hex);
-  const hsl = { h: 0, s: 0, l: 0 };
-  c.getHSL(hsl);
-  hueSlider.value = Math.round(hsl.h * 360);
-  saturationSlider.value = Math.round(hsl.s * 100);
-  brightnessSlider.value = Math.round(hsl.l * 100);
-  hueValueEl.textContent = `${hueSlider.value}°`;
-  saturationValueEl.textContent = `${saturationSlider.value}%`;
-  brightnessValueEl.textContent = `${brightnessSlider.value}%`;
-}
-
-// User is actively dragging a slider — compute the resulting color, make it
-// the pending color, and preview it live: on the selection if one exists,
-// otherwise on every part (so the sliders are never a no-op).
-function applyHSLFromSliders() {
-  const h = parseFloat(hueSlider.value) / 360;
-  const s = parseFloat(saturationSlider.value) / 100;
-  const l = parseFloat(brightnessSlider.value) / 100;
-  hueValueEl.textContent = `${hueSlider.value}°`;
-  saturationValueEl.textContent = `${saturationSlider.value}%`;
-  brightnessValueEl.textContent = `${brightnessSlider.value}%`;
-
-  const c = new THREE.Color();
-  c.setHSL(h, s, l);
-  pendingColorHex = c.getHex();
-  document.querySelectorAll('.color-swatch').forEach((b) => b.classList.remove('active'));
-  if (selectedMesh) {
-    applyColorToMesh(selectedMesh, pendingColorHex);
-  } else {
-    getPickableMeshesIncludingHidden().forEach((mesh) => applyColorToMesh(mesh, pendingColorHex));
-  }
-  updateApplyAllState();
-}
-[hueSlider, saturationSlider, brightnessSlider].forEach((slider) => {
-  slider.addEventListener('input', applyHSLFromSliders);
 });
 
 function updateCameraProjection() {
@@ -502,13 +515,19 @@ const lightState = { ...DEFAULT_LIGHT };
 // absolute size.
 const LIGHT_ORBIT_MARGIN = 1.0;
 
-function lightDirFromAngles(azimuthDeg, elevationDeg) {
+// The inverse of anglesFromDirection below — also dual-purpose (key light,
+// and the editable camera angle fields further down).
+function directionFromAngles(azimuthDeg, elevationDeg) {
   const az = (azimuthDeg * Math.PI) / 180;
   const el = (elevationDeg * Math.PI) / 180;
   return new THREE.Vector3(Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el));
 }
 
-function anglesFromLightDir(dir) {
+// Generic direction-vector → azimuth/elevation converter — used for the key
+// light's angle, and reused below for the camera's angle relative to
+// whatever it's orbiting (controls.target), since both are just "a point on
+// a sphere around a center" in the same Z-up spherical convention.
+function anglesFromDirection(dir) {
   const elevationDeg = (Math.asin(THREE.MathUtils.clamp(dir.z, -1, 1)) * 180) / Math.PI;
   const azimuthDeg = (Math.atan2(dir.y, dir.x) * 180) / Math.PI;
   return { azimuthDeg, elevationDeg };
@@ -593,7 +612,7 @@ function updateLightFromPointer(clientX, clientY) {
     raycaster.ray.closestPointToPoint(controls.target, closest);
     dir = closest.sub(controls.target).normalize();
   }
-  const angles = anglesFromLightDir(dir);
+  const angles = anglesFromDirection(dir);
   lightState.azimuthDeg = roundClean(angles.azimuthDeg);
   lightState.elevationDeg = roundClean(THREE.MathUtils.clamp(angles.elevationDeg, -89, 89));
   syncLightSlidersFromState();
@@ -605,14 +624,14 @@ function updateKeyLights() {
   const target = controls.target;
   const dist = lightOrbitDistance();
 
-  const keyDir = lightDirFromAngles(lightState.azimuthDeg, lightState.elevationDeg);
+  const keyDir = directionFromAngles(lightState.azimuthDeg, lightState.elevationDeg);
   keyLight.position.copy(target).addScaledVector(keyDir, dist);
   keyLight.target.position.copy(target);
 
   // Fill stays a softer, lower light on the opposite side of the key light —
   // the same relationship the old camera-locked rig had, just anchored to
   // the key light's angle instead of the camera's.
-  const fillDir = lightDirFromAngles(lightState.azimuthDeg + 180, lightState.elevationDeg * 0.5);
+  const fillDir = directionFromAngles(lightState.azimuthDeg + 180, lightState.elevationDeg * 0.5);
   fillLight.position.copy(target).addScaledVector(fillDir, dist);
   fillLight.target.position.copy(target);
 
@@ -622,6 +641,7 @@ function updateKeyLights() {
 renderer.setAnimationLoop(() => {
   controls.update();
   updateKeyLights();
+  updateCameraAngleInputs();
   if (!isDraggingLight) updateHoverPick();
   renderer.render(scene, camera);
 });
@@ -640,6 +660,20 @@ const VIEW_PRESETS = {
   'iso-flt': { dir: [-1, -1, 1], up: [0, 0, 1] }, // front-left-top
   'iso-brt': { dir: [1, 1, 1],   up: [0, 0, 1] }, // back-right-top
   'iso-blt': { dir: [-1, 1, 1],  up: [0, 0, 1] }, // back-left-top
+
+  // "Hero" views: shallower than true isometric (35.26°), closer to a
+  // product-photography angle — flat/wide hardware (a card, a server tray)
+  // reads better here than at the steeper CAD-isometric elevation, which
+  // foreshortens thin parts oddly. Same 4 corners as Isometric, at 18°
+  // elevation, plus a Top view tilted 30° toward the front or back (60°
+  // elevation, no left-right skew) for showing a fan shroud/heatsink layout
+  // with some depth instead of a flat orthographic Top.
+  'hero-fr':        { dir: [0.673, -0.673, 0.309], up: [0, 0, 1] }, // front-right, 18°
+  'hero-fl':        { dir: [-0.673, -0.673, 0.309], up: [0, 0, 1] }, // front-left, 18°
+  'hero-br':        { dir: [0.673, 0.673, 0.309],  up: [0, 0, 1] }, // back-right, 18°
+  'hero-bl':        { dir: [-0.673, 0.673, 0.309], up: [0, 0, 1] }, // back-left, 18°
+  'hero-top-front': { dir: [0, -0.5, 0.866],       up: [0, 0, 1] }, // top tilted 30° toward front, 60°
+  'hero-top-back':  { dir: [0, 0.5, 0.866],        up: [0, 0, 1] }, // top tilted 30° toward back, 60°
 };
 
 function applyView(name) {
@@ -661,8 +695,95 @@ function applyView(name) {
   controls.update();
 }
 
-document.querySelectorAll('#iso-grid .btn, #ortho-grid .btn').forEach((btn) => {
+document.querySelectorAll('#iso-grid .btn, #ortho-grid .btn, #hero-grid .btn').forEach((btn) => {
   btn.addEventListener('click', () => applyView(btn.dataset.view));
+});
+
+// Camera angle as azimuth/elevation/distance from whatever it's orbiting —
+// portable to any other 3D software, unlike raw camera rotation (an
+// internal Euler XYZ tied to this app's particular rotation-order
+// convention). Orbiting with the mouse, clicking a view preset, or panning
+// all move the camera, so this is recomputed every frame rather than only
+// on specific events.
+function getCameraSphericalInfo() {
+  const offset = camera.position.clone().sub(controls.target);
+  const distance = offset.length();
+  const { azimuthDeg, elevationDeg } = anglesFromDirection(offset.normalize());
+  return { azimuthDeg, elevationDeg, distance };
+}
+
+function formatCameraAngleText() {
+  const { azimuthDeg, elevationDeg, distance } = getCameraSphericalInfo();
+  return `Az ${azimuthDeg.toFixed(1)}°  El ${elevationDeg.toFixed(1)}°  Dist ${distance.toFixed(0)}mm`;
+}
+
+// Skips a field the user is actively typing in, same reasoning as the
+// Rotate Model angle fields never getting clobbered mid-edit — except those
+// only change on button clicks, while the camera moves every frame (orbit),
+// so this guard actually matters here.
+function updateCameraAngleInputs() {
+  const { azimuthDeg, elevationDeg, distance } = getCameraSphericalInfo();
+  if (document.activeElement !== cameraAzimuthInput) cameraAzimuthInput.value = azimuthDeg.toFixed(1);
+  if (document.activeElement !== cameraElevationInput) cameraElevationInput.value = elevationDeg.toFixed(1);
+  if (document.activeElement !== cameraDistanceInput) cameraDistanceInput.value = distance.toFixed(0);
+}
+
+// Orbits the camera to an exact azimuth/elevation/distance around
+// controls.target — the inverse of getCameraSphericalInfo, same relationship
+// as applyView()'s dir-vector placement but from typed numbers instead of a
+// fixed preset. Elevation is clamped shy of the poles (matches the light
+// direction fields) since azimuth becomes meaningless exactly at ±90°.
+function applyCameraSpherical(azimuthDeg, elevationDeg, distance) {
+  const clampedElevation = THREE.MathUtils.clamp(elevationDeg, -89, 89);
+  const clampedDistance = Math.max(distance, modelRadius * 0.01);
+  const dir = directionFromAngles(azimuthDeg, clampedElevation);
+  camera.up.set(0, 0, 1);
+  camera.position.copy(controls.target).addScaledVector(dir, clampedDistance);
+  camera.lookAt(controls.target);
+  controls.update();
+}
+
+[cameraAzimuthInput, cameraElevationInput, cameraDistanceInput].forEach((input) => {
+  input.addEventListener('change', () => {
+    const azimuthDeg = parseFloat(cameraAzimuthInput.value);
+    const elevationDeg = parseFloat(cameraElevationInput.value);
+    const distance = parseFloat(cameraDistanceInput.value);
+    if (Number.isNaN(azimuthDeg) || Number.isNaN(elevationDeg) || Number.isNaN(distance) || distance <= 0) {
+      updateCameraAngleInputs(); // invalid entry — revert to the camera's actual current angle
+      return;
+    }
+    applyCameraSpherical(azimuthDeg, elevationDeg, distance);
+  });
+});
+
+// Same nudge-by-a-fixed-step pattern as Rotate Model's ±7.5° buttons.
+// Distance nudges by ±10% (multiplicative) rather than a fixed mm amount,
+// since a fixed step wouldn't scale sensibly between a tiny part and a
+// full server chassis — same reasoning as the light/hero-view orbit radius
+// scaling off modelRadius instead of a flat offset.
+document.querySelectorAll('#camera-angle-grid .btn').forEach((btn) => {
+  btn.addEventListener('click', () => {
+    const axis = btn.dataset.cameraAxis;
+    const nudge = parseFloat(btn.dataset.nudge);
+    const current = getCameraSphericalInfo();
+    if (axis === 'distance') {
+      applyCameraSpherical(current.azimuthDeg, current.elevationDeg, current.distance * nudge);
+    } else if (axis === 'azimuth') {
+      applyCameraSpherical(current.azimuthDeg + nudge, current.elevationDeg, current.distance);
+    } else {
+      applyCameraSpherical(current.azimuthDeg, current.elevationDeg + nudge, current.distance);
+    }
+  });
+});
+
+copyCameraAngleBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(formatCameraAngleText()).then(() => {
+    const original = copyCameraAngleBtn.textContent;
+    copyCameraAngleBtn.textContent = 'Copied!';
+    setTimeout(() => {
+      copyCameraAngleBtn.textContent = original;
+    }, 1200);
+  });
 });
 
 resetFitBtn.addEventListener('click', () => applyView('iso-flt'));
@@ -901,6 +1022,22 @@ function fitCameraToModel() {
 
   grid.scale.setScalar(modelRadius / 500);
   grid.position.set(modelCenter.x, modelCenter.y, box.min.z);
+
+  groundPlane.scale.setScalar(modelRadius * 20);
+  groundPlane.position.set(modelCenter.x, modelCenter.y, box.min.z);
+
+  // The shadow camera is a separate orthographic frustum the key light uses
+  // to render its shadow map — sized here so it always just covers the
+  // model's bounding sphere, however big or small the loaded part is.
+  const shadowCam = keyLight.shadow.camera;
+  const shadowExtent = modelRadius * 1.3;
+  shadowCam.left = -shadowExtent;
+  shadowCam.right = shadowExtent;
+  shadowCam.top = shadowExtent;
+  shadowCam.bottom = -shadowExtent;
+  shadowCam.near = modelRadius * 0.01;
+  shadowCam.far = modelRadius * 3;
+  shadowCam.updateProjectionMatrix();
 }
 
 // Adapted from occt-import-js's official three.js example.
@@ -984,49 +1121,75 @@ function buildMesh(geometryMesh, showEdges) {
 
   const mesh = new THREE.Mesh(geometry, materials.length > 1 ? materials : materials[0]);
   mesh.name = geometryMesh.name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
   if (edges) edges.renderOrder = mesh.renderOrder + 1;
 
   return { mesh, geometry, edges };
 }
 
 // A procedural cube stands in until a real file is loaded, so there's
-// always something on screen to try the controls on. It's built as a normal
-// part/group — same as a loaded STEP file's meshes — so every part
-// interaction (select, hide, material, edges) works on it identically.
+// always something on screen to try the controls on. Each face is its own
+// mesh/"part" — same as a multi-part STEP file's meshes — so every part
+// interaction (select, hide, material, edges) works on each face
+// independently, including recoloring them individually.
 // clearModel() (called at the top of onStepParsed) tears it down exactly
 // like any other loaded model, so loading a real file replaces it for free.
-const DEFAULT_SHAPE_NAME = 'Test cube (default — load a file to replace)';
+const CUBE_HALF_SIZE = 35;
+const CUBE_FACES = [
+  { name: 'Top', normal: [0, 0, 1] },
+  { name: 'Bottom', normal: [0, 0, -1] },
+  { name: 'Front', normal: [0, -1, 0] },
+  { name: 'Back', normal: [0, 1, 0] },
+  { name: 'Right', normal: [1, 0, 0] },
+  { name: 'Left', normal: [-1, 0, 0] },
+];
+const PLANE_NORMAL = new THREE.Vector3(0, 0, 1); // PlaneGeometry's default facing, before orienting per face
 
 function loadDefaultTestShape() {
   clearModel();
 
-  const geometry = new THREE.BoxGeometry(70, 70, 70);
-  geometry.name = DEFAULT_SHAPE_NAME;
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xb0b3b8,
-    metalness: DEFAULT_FINISH.metalness,
-    roughness: DEFAULT_FINISH.roughness,
-    emissiveIntensity: HIGHLIGHT_EMISSIVE_INTENSITY,
-    side: THREE.DoubleSide,
-  });
-  const mesh = new THREE.Mesh(geometry, material);
-  mesh.name = DEFAULT_SHAPE_NAME;
-  mesh.visible = true;
-
   const outlineMaterial = new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.35 });
-  const edges = toggleEdgesEl.checked
-    ? new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMaterial)
-    : null;
-  if (edges) edges.renderOrder = mesh.renderOrder + 1;
-  mesh.userData.edges = edges;
-
   const group = new THREE.Group();
-  group.add(mesh);
-  if (edges) group.add(edges);
+  const meshList = [];
+
+  CUBE_FACES.forEach((face) => {
+    const normal = new THREE.Vector3(...face.normal);
+    const geometry = new THREE.PlaneGeometry(CUBE_HALF_SIZE * 2, CUBE_HALF_SIZE * 2);
+    geometry.name = face.name;
+    // Bake the face's orientation and offset into the geometry itself
+    // (rather than the mesh's transform) — same convention as a STEP file's
+    // meshes, whose vertex positions already sit in world/model space.
+    geometry.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(PLANE_NORMAL, normal));
+    geometry.translate(...normal.clone().multiplyScalar(CUBE_HALF_SIZE).toArray());
+
+    const material = new THREE.MeshStandardMaterial({
+      color: 0xb0b3b8,
+      metalness: DEFAULT_FINISH.metalness,
+      roughness: DEFAULT_FINISH.roughness,
+      emissiveIntensity: HIGHLIGHT_EMISSIVE_INTENSITY,
+      side: THREE.DoubleSide, // visible from inside too, e.g. after shift+click-hiding an adjacent face
+    });
+    const mesh = new THREE.Mesh(geometry, material);
+    mesh.name = face.name;
+    mesh.visible = true;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+
+    const edges = toggleEdgesEl.checked
+      ? new THREE.LineSegments(new THREE.EdgesGeometry(geometry, 25), outlineMaterial)
+      : null;
+    if (edges) edges.renderOrder = mesh.renderOrder + 1;
+    mesh.userData.edges = edges;
+
+    group.add(mesh);
+    if (edges) group.add(edges);
+    meshList.push(mesh);
+  });
 
   flipGroup.add(group);
   currentGroup = group;
-  buildPartsList([mesh]);
+  buildPartsList(meshList);
   setLightGizmoVisible(true);
 
   fitCameraToModel();
@@ -1034,7 +1197,8 @@ function loadDefaultTestShape() {
 
   modelInfoEl.innerHTML =
     `<div><b>Test cube</b></div>` +
-    `<div>Default placeholder — load a file to replace it.</div>`;
+    `<div>Default placeholder — load a file to replace it.</div>` +
+    `<div>6 faces, individually selectable in Parts below.</div>`;
   setStatus('Ready.');
 }
 
@@ -1059,11 +1223,11 @@ function getModelBaseName(fallback) {
 
 function getCameraInfoLines() {
   const p = camera.position;
-  const r = camera.rotation;
-  const toDeg = (rad) => ((rad * 180) / Math.PI).toFixed(1);
   return [
     `Camera position (mm)   X ${p.x.toFixed(1)}   Y ${p.y.toFixed(1)}   Z ${p.z.toFixed(1)}`,
-    `Camera angle            X ${toDeg(r.x)}°   Y ${toDeg(r.y)}°   Z ${toDeg(r.z)}°`,
+    // Az/El/Distance from target, not raw camera rotation — portable to any
+    // other 3D software's own camera controls, unlike an internal Euler XYZ.
+    `Camera angle            ${formatCameraAngleText()}`,
     // The camera never moves when you use Rotate Model (it spins the model
     // itself, in place) — so without this line the export would have no
     // record of that rotation at all, even though it changes what's shown.
@@ -1126,9 +1290,10 @@ function getMaterialSummaryLines() {
 
 function getExportLabelLines() {
   const exposureValue = parseFloat(exposureSlider.value).toFixed(2);
+  const shadowInfo = toggleShadowsEl.checked ? `, Shadow softness ${parseFloat(softnessSlider.value).toFixed(1)}` : '';
   const lightLine =
     `Lighting                ${exposureValue}×` +
-    `  (Az ${lightState.azimuthDeg.toFixed(1)}°, El ${lightState.elevationDeg.toFixed(1)}°)`;
+    `  (Az ${lightState.azimuthDeg.toFixed(1)}°, El ${lightState.elevationDeg.toFixed(1)}°${shadowInfo})`;
   return [...getCameraInfoLines(), lightLine, ...getMaterialSummaryLines()];
 }
 
@@ -1195,7 +1360,15 @@ function downloadViewAsPng(scale = 1) {
   offRenderer.toneMapping = THREE.ACESFilmicToneMapping;
   offRenderer.toneMappingExposure = renderer.toneMappingExposure;
   offRenderer.setPixelRatio(1);
-  offRenderer.setClearColor(0x000000, 0);
+  // Mirrors the live Background color exactly, including its enabled state —
+  // unchecked (transparent) still drops cleanly onto slides/docs; checked
+  // bakes that color in as an opaque background. Either way, a cast shadow
+  // composites correctly: ShadowMaterial's alpha works the same over a solid
+  // color or over full transparency.
+  const bgHex = renderer.getClearColor(new THREE.Color()).getHex();
+  offRenderer.setClearColor(bgHex, toggleBackgroundEl.checked ? 1 : 0);
+  offRenderer.shadowMap.enabled = renderer.shadowMap.enabled;
+  offRenderer.shadowMap.type = renderer.shadowMap.type;
 
   // The light gizmo is a UI aid, not part of the model — never bake it into the export.
   const gizmoWasVisible = lightGizmo.visible;
@@ -1293,10 +1466,14 @@ function collectSettings() {
       totals: { ...rotationTotals },
     },
     lightingIntensity: parseFloat(exposureSlider.value),
+    lightSoftness: parseFloat(softnessSlider.value),
     light: { azimuthDeg: lightState.azimuthDeg, elevationDeg: lightState.elevationDeg },
     display: {
       edges: toggleEdgesEl.checked,
       wireframe: toggleWireframeEl.checked,
+      shadows: toggleShadowsEl.checked,
+      backgroundEnabled: toggleBackgroundEl.checked,
+      backgroundColorHex: `#${renderer.getClearColor(new THREE.Color()).getHexString()}`,
     },
     parts: meshes.map((mesh, i) => {
       const mat = meshMaterials(mesh)[0];
@@ -1360,11 +1537,28 @@ function applySettings(settings) {
       toggleWireframeEl.checked = settings.display.wireframe;
       toggleWireframeEl.dispatchEvent(new Event('change'));
     }
+    if (typeof settings.display.shadows === 'boolean') {
+      toggleShadowsEl.checked = settings.display.shadows;
+      toggleShadowsEl.dispatchEvent(new Event('change'));
+    }
+    if (typeof settings.display.backgroundColorHex === 'string') {
+      const hex = parseHexColor(settings.display.backgroundColorHex);
+      if (hex !== null) applyBackgroundColor(hex);
+    }
+    if (typeof settings.display.backgroundEnabled === 'boolean') {
+      toggleBackgroundEl.checked = settings.display.backgroundEnabled;
+      toggleBackgroundEl.dispatchEvent(new Event('change'));
+    }
   }
 
   if (typeof settings.lightingIntensity === 'number') {
     exposureSlider.value = settings.lightingIntensity;
     applyLightingIntensity(settings.lightingIntensity);
+  }
+
+  if (typeof settings.lightSoftness === 'number') {
+    softnessSlider.value = settings.lightSoftness;
+    applyLightSoftness(settings.lightSoftness);
   }
 
   if (settings.light) {
@@ -1477,6 +1671,67 @@ toggleEdgesEl.addEventListener('change', () => {
     if (mesh.userData.edges) mesh.userData.edges.visible = toggleEdgesEl.checked && mesh.visible;
   });
 });
+
+toggleShadowsEl.addEventListener('change', () => {
+  const on = toggleShadowsEl.checked;
+  renderer.shadowMap.enabled = on;
+  keyLight.castShadow = on;
+  groundPlane.visible = on;
+  softnessRowEl.style.opacity = on ? '1' : '0.4';
+});
+
+// VSMShadowMap is the shadow type whose blur radius is actually
+// controllable (see the renderer.shadowMap.type comment above) — 0 is a
+// crisp, hard-edged shadow; higher values blur it into a soft penumbra.
+function applyLightSoftness(v) {
+  keyLight.shadow.radius = v;
+  softnessValueEl.textContent = v.toFixed(1);
+}
+softnessSlider.addEventListener('input', () => applyLightSoftness(parseFloat(softnessSlider.value)));
+applyLightSoftness(parseFloat(softnessSlider.value));
+softnessRowEl.style.opacity = toggleShadowsEl.checked ? '1' : '0.4';
+
+// Accepts "#rrggbb", "rrggbb", or short "#fff"/"fff" forms; returns a
+// THREE-style 0xRRGGBB number, or null if the string isn't a valid hex color.
+function parseHexColor(str) {
+  const s = str.trim().replace(/^#/, '');
+  if (/^[0-9a-fA-F]{6}$/.test(s)) return parseInt(s, 16);
+  if (/^[0-9a-fA-F]{3}$/.test(s)) {
+    const [r, g, b] = s;
+    return parseInt(r + r + g + g + b + b, 16);
+  }
+  return null;
+}
+
+// Sets the background color and respects the enable/disable checkbox's
+// current state for the alpha channel — unchecked means transparent, both
+// live and (via the offscreen renderer mirroring this below) in PNG exports.
+function applyBackgroundColor(hex) {
+  const normalized = `#${hex.toString(16).padStart(6, '0')}`;
+  backgroundColorPicker.value = normalized;
+  backgroundColorHexInput.value = normalized;
+  renderer.setClearColor(hex, toggleBackgroundEl.checked ? 1 : 0);
+}
+
+backgroundColorPicker.addEventListener('input', () => {
+  applyBackgroundColor(parseHexColor(backgroundColorPicker.value));
+});
+
+backgroundColorHexInput.addEventListener('change', () => {
+  const hex = parseHexColor(backgroundColorHexInput.value);
+  if (hex === null) {
+    backgroundColorHexInput.value = backgroundColorPicker.value;
+    return;
+  }
+  applyBackgroundColor(hex);
+});
+
+toggleBackgroundEl.addEventListener('change', () => {
+  backgroundColorRowEl.style.opacity = toggleBackgroundEl.checked ? '1' : '0.4';
+  applyBackgroundColor(parseHexColor(backgroundColorHexInput.value));
+});
+
+applyBackgroundColor(0xffffff);
 
 // Scales ambient (hemisphere) + fill light together — raising the shadow
 // floor is what actually cuts contrast for metal/shiny finishes. The key
