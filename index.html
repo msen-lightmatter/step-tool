@@ -264,6 +264,10 @@
     line-height: 1.5;
   }
   #model-info b { color: var(--text); }
+  .model-warning {
+    color: #ffb020;
+    margin-top: 4px;
+  }
   .link-btn {
     background: none;
     border: none;
@@ -345,6 +349,12 @@
   }
   #loading-overlay.visible {
     display: flex;
+  }
+  #loading-elapsed {
+    font-size: 12px;
+    color: var(--text-dim);
+    max-width: 320px;
+    text-align: center;
   }
   .spinner {
     width: 34px;
@@ -635,6 +645,7 @@
     <div id="loading-overlay">
       <div class="spinner"></div>
       <div id="loading-text">Parsing STEP file...</div>
+      <div id="loading-elapsed"></div>
     </div>
   </div>
 </div>

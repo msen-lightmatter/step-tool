@@ -8,6 +8,7 @@ const statusEl = document.getElementById('status');
 const modelInfoEl = document.getElementById('model-info');
 const loadingOverlay = document.getElementById('loading-overlay');
 const loadingText = document.getElementById('loading-text');
+const loadingElapsedEl = document.getElementById('loading-elapsed');
 const toggleEdgesEl = document.getElementById('toggle-edges');
 const toggleWireframeEl = document.getElementById('toggle-wireframe');
 const toggleOrthoEl = document.getElementById('toggle-ortho');
@@ -890,13 +891,42 @@ function setStatus(text) {
   statusEl.textContent = text;
 }
 
+// A large or geometrically complex STEP file can take many minutes to
+// tessellate in a single-threaded, in-browser WASM parser, with no progress
+// callbacks available from occt-import-js along the way — so without a
+// ticking clock, a slow-but-working parse and a genuinely dead one look
+// identical. This is the app's only defense against that: proof the page
+// itself is still alive and time is passing, even though it can't report
+// how much work remains.
+let loadingStartTime = null;
+let loadingTimerId = null;
+
+function updateLoadingElapsed() {
+  if (loadingStartTime === null) return;
+  const elapsedSec = Math.round((performance.now() - loadingStartTime) / 1000);
+  const mins = Math.floor(elapsedSec / 60);
+  const secs = elapsedSec % 60;
+  const elapsedStr = mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+  loadingElapsedEl.textContent = `Elapsed: ${elapsedStr} — still working. Very large or complex assemblies can take several minutes.`;
+}
+
 function showLoading(text) {
   loadingText.textContent = text;
   loadingOverlay.classList.add('visible');
+  loadingStartTime = performance.now();
+  updateLoadingElapsed();
+  if (loadingTimerId) clearInterval(loadingTimerId);
+  loadingTimerId = setInterval(updateLoadingElapsed, 1000);
 }
 
 function hideLoading() {
   loadingOverlay.classList.remove('visible');
+  if (loadingTimerId) {
+    clearInterval(loadingTimerId);
+    loadingTimerId = null;
+  }
+  loadingStartTime = null;
+  loadingElapsedEl.textContent = '';
 }
 
 function clearModel() {
@@ -917,9 +947,21 @@ function clearModel() {
   setLightGizmoVisible(false);
 }
 
+// Files above this size aren't guaranteed to fail (it's really the part
+// count / geometric complexity that determines whether this in-browser,
+// single-threaded WASM parser can handle a file, not raw byte size alone),
+// but it's the only signal available before parsing even starts, so it's
+// worth a heads-up rather than launching straight into a silent multi-minute wait.
+const LARGE_FILE_WARNING_BYTES = 30 * 1024 * 1024;
+
 function loadStepFile(file) {
   fileNameEl.textContent = file.name;
-  showLoading(`Parsing ${file.name}...`);
+  const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+  const sizeNote =
+    file.size > LARGE_FILE_WARNING_BYTES
+      ? ` (${sizeMb} MB — large, may take several minutes and very complex assemblies may not fully render)`
+      : ` (${sizeMb} MB)`;
+  showLoading(`Parsing ${file.name}${sizeNote}...`);
   setStatus('Reading file...');
 
   const reader = new FileReader();
@@ -963,6 +1005,7 @@ function onStepParsed(result, file) {
   const group = new THREE.Group();
   const meshList = [];
   let triangleCount = 0;
+  let emptyMeshCount = 0;
   for (const resultMesh of result.meshes) {
     const { mesh, edges } = buildMesh(resultMesh, toggleEdgesEl.checked);
     mesh.visible = true;
@@ -970,7 +1013,9 @@ function onStepParsed(result, file) {
     group.add(mesh);
     if (edges) group.add(edges);
     meshList.push(mesh);
-    triangleCount += resultMesh.index.array.length / 3;
+    const meshTriangles = resultMesh.index.array.length / 3;
+    triangleCount += meshTriangles;
+    if (meshTriangles === 0) emptyMeshCount++;
   }
   flipGroup.add(group);
   currentGroup = group;
@@ -980,13 +1025,37 @@ function onStepParsed(result, file) {
   fitCameraToModel();
   applyView('iso-flt');
 
+  // occt-import-js can report success and a full part list while still
+  // silently failing to tessellate some or all of them into actual
+  // triangles (seen on a 17,678-part assembly that likely exceeded this
+  // single-threaded WASM parser's memory budget) — a real, distinct failure
+  // mode from a parse error, and one that otherwise looks identical to "it
+  // loaded fine but there's nothing worth looking at," i.e. an empty
+  // viewport with no explanation. Surface it instead of staying silent.
+  const totalParts = result.meshes.length;
+  let statusMessage = 'Ready.';
+  let warningHtml = '';
+  if (totalParts > 0 && emptyMeshCount === totalParts) {
+    statusMessage = 'Parsed, but no part produced visible geometry — see warning below.';
+    warningHtml =
+      `<div class="model-warning">Warning: all ${totalParts.toLocaleString()} part(s) parsed with zero ` +
+      `triangles. This file is likely too complex for this browser-based viewer — try a simplified ` +
+      `export (fewer individual fasteners/instances) or a desktop CAD tool.</div>`;
+  } else if (emptyMeshCount > 0) {
+    statusMessage = 'Ready — some parts have no geometry (see warning below).';
+    warningHtml =
+      `<div class="model-warning">Warning: ${emptyMeshCount.toLocaleString()} of ${totalParts.toLocaleString()} ` +
+      `part(s) parsed with zero triangles and won't be visible.</div>`;
+  }
+
   const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
   modelInfoEl.innerHTML =
     `<div><b>${escapeHtml(file.name)}</b></div>` +
-    `<div>${result.meshes.length} mesh part(s)</div>` +
+    `<div>${totalParts.toLocaleString()} mesh part(s)</div>` +
     `<div>${triangleCount.toLocaleString()} triangles</div>` +
-    `<div>${sizeMb} MB on disk</div>`;
-  setStatus('Ready.');
+    `<div>${sizeMb} MB on disk</div>` +
+    warningHtml;
+  setStatus(statusMessage);
 }
 
 function escapeHtml(str) {
